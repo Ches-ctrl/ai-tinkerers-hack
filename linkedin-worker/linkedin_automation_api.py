@@ -18,17 +18,17 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-async def human_like_delay(min_ms: int = 500, max_ms: int = 2000):
-    """Add a human-like delay to avoid bot detection."""
+async def human_like_delay(min_ms: int = 100, max_ms: int = 300):
+    """Add a minimal delay for UI responsiveness."""
     delay = random.uniform(min_ms, max_ms) / 1000
     await asyncio.sleep(delay)
 
 
-async def human_like_typing(page, selector: str, text: str, delay_range: tuple = (50, 150)):
-    """Type text with human-like delays between keystrokes."""
+async def human_like_typing(page, selector: str, text: str, delay_range: tuple = (10, 30)):
+    """Type text with minimal delays between keystrokes."""
     element = await page.wait_for_selector(selector)
     await element.click()
-    await asyncio.sleep(0.1)  # Small delay after click
+    await asyncio.sleep(0.05)  # Small delay after click
     
     for char in text:
         await element.type(char)
@@ -39,7 +39,7 @@ async def human_like_typing(page, selector: str, text: str, delay_range: tuple =
 async def human_like_scroll(page, amount: int = 300):
     """Scroll the page like a human would."""
     await page.evaluate(f'window.scrollBy(0, {amount})')
-    await human_like_delay(300, 800)
+    await human_like_delay(100, 200)
 
 
 class LinkedInAutomationAPI:
@@ -149,16 +149,56 @@ class LinkedInAutomationAPI:
             # Set storage state
             await self.context.add_cookies(session_data["cookies"])
             
-            # Test if session is still valid
-            await self.page.goto('https://www.linkedin.com/feed/', wait_until='networkidle')
-            await human_like_delay(2000, 3000)
+            # First, check if we're already on LinkedIn and logged in
+            current_url = self.page.url
+            print(f"Current page URL: {current_url}")
             
-            # Check if we're actually logged in
-            if 'feed' in self.page.url and 'login' not in self.page.url:
-                self.is_logged_in = True
-                print("Session loaded successfully - already logged in")
-            else:
-                print("Session expired, will need to login")
+            # If we're already on LinkedIn, check if we're logged in
+            if 'linkedin.com' in current_url and 'login' not in current_url:
+                print("Already on LinkedIn, checking login status...")
+                try:
+                    # Look for elements that indicate we're logged in
+                    await self.page.wait_for_selector('.global-nav__primary-link, .feed-shared-actor__name, [data-test-global-nav-profile]', timeout=3000)
+                    self.is_logged_in = True
+                    print("Session loaded successfully - already logged in and on LinkedIn")
+                    return
+                except:
+                    print("Not logged in, will need to login")
+                    self.is_logged_in = False
+                    return
+            
+            # Test if session is still valid - try to go to feed page
+            try:
+                print("Navigating to LinkedIn feed to test session...")
+                await self.page.goto('https://www.linkedin.com/feed/', wait_until='domcontentloaded', timeout=15000)
+                await human_like_delay(500, 1000)
+                
+                # Check if we're actually logged in by looking for LinkedIn-specific elements
+                try:
+                    # Wait for either login form or feed content
+                    await self.page.wait_for_selector('input[name="session_key"], .feed-shared-actor__name, .global-nav__primary-link, [data-test-global-nav-profile]', timeout=8000)
+                    
+                    # If we can find login form, session expired
+                    if await self.page.query_selector('input[name="session_key"]'):
+                        print("Session expired - found login form")
+                        self.is_logged_in = False
+                    # If we're on feed page with navigation, we're logged in
+                    elif 'feed' in self.page.url or ('linkedin.com' in self.page.url and 'login' not in self.page.url):
+                        self.is_logged_in = True
+                        print("Session loaded successfully - navigated to feed and logged in")
+                    else:
+                        print("Session status unclear, will attempt login")
+                        self.is_logged_in = False
+                        
+                except Exception as e:
+                    print(f"Error checking session status: {e}")
+                    print("Will attempt login")
+                    self.is_logged_in = False
+                    
+            except Exception as e:
+                print(f"Error loading feed page: {e}")
+                print("Will attempt login")
+                self.is_logged_in = False
                 
         except Exception as e:
             print(f"Failed to load session: {e}")
@@ -169,23 +209,23 @@ class LinkedInAutomationAPI:
         try:
             print("Logging into LinkedIn...")
             await self.page.goto('https://www.linkedin.com/login', wait_until='networkidle')
-            await human_like_delay(1000, 2000)
+            await human_like_delay(200, 500)
             
             # Wait for and fill login form with human-like behavior
             await self.page.wait_for_selector('#username', timeout=10000)
-            await human_like_delay(500, 1000)
+            await human_like_delay(100, 200)
             
             # Type email with human-like delays
             await human_like_typing(self.page, '#username', self.email)
-            await human_like_delay(300, 600)
+            await human_like_delay(100, 200)
             
             # Type password with human-like delays
             await human_like_typing(self.page, '#password', self.password)
-            await human_like_delay(500, 1000)
+            await human_like_delay(100, 200)
             
             # Click sign in with slight delay
             await self.page.click('button[type="submit"]')
-            await human_like_delay(2000, 3000)
+            await human_like_delay(500, 1000)
             
             # Wait for successful login
             try:
@@ -240,11 +280,11 @@ class LinkedInAutomationAPI:
         try:
             print(f"Visiting profile: {profile_url}")
             await self.page.goto(profile_url, wait_until='networkidle')
-            await human_like_delay(2000, 4000)
+            await human_like_delay(200, 500)
             
             # Scroll down a bit to simulate reading the profile
             await human_like_scroll(self.page, 300)
-            await human_like_delay(1000, 2000)
+            await human_like_delay(100, 200)
             
             # Try multiple selectors for connect button
             connect_selectors = [
@@ -291,9 +331,9 @@ class LinkedInAutomationAPI:
                 try:
                     send_button = await self.page.wait_for_selector(selector, timeout=3000)
                     if send_button:
-                        await human_like_delay(300, 600)
+                        await human_like_delay(100, 200)
                         await send_button.click()
-                        await human_like_delay(1000, 2000)
+                        await human_like_delay(200, 500)
                         print("Connection request sent successfully")
                         return True, "Connection request sent successfully", profile_url
                 except:
@@ -313,14 +353,14 @@ class LinkedInAutomationAPI:
             print(f"Search URL: {search_url}")
             
             await self.page.goto(search_url, wait_until='networkidle')
-            await human_like_delay(2000, 3000)
+            await human_like_delay(200, 500)
             
             # Look for "People" tab and click it to filter to people results
             try:
-                people_tab = await self.page.wait_for_selector('button:has-text("People")', timeout=5000)
+                people_tab = await self.page.wait_for_selector('button:has-text("People")', timeout=3000)
                 if people_tab:
                     await people_tab.click()
-                    await human_like_delay(2000, 3000)
+                    await human_like_delay(200, 500)
                     print("Clicked People tab to filter results")
             except:
                 print("Could not find People tab, continuing with all results")
@@ -348,15 +388,83 @@ class LinkedInAutomationAPI:
             if not first_result:
                 return False, f"No profile results found for '{name}'", None
             
+            # Get profile URL for return value
             profile_url = await first_result.get_attribute('href')
-            
-            # Clean up the URL
             if profile_url.startswith('/'):
                 profile_url = f"https://www.linkedin.com{profile_url}"
             
             print(f"Found profile: {profile_url}")
+            print("Clicking on profile link...")
             
-            return await self._add_by_profile_url(profile_url, message)
+            # Click on the profile link to navigate to the profile page
+            await human_like_delay(100, 200)  # Pause before clicking
+            await first_result.click()
+            
+            # Wait for profile page to load
+            await self.page.wait_for_load_state('networkidle')
+            await human_like_delay(200, 500)
+            
+            print(f"Navigated to profile page: {self.page.url}")
+            
+            # Now we're on the profile page, scroll down a bit to simulate reading
+            await human_like_scroll(self.page, 300)
+            await human_like_delay(100, 200)
+            
+            # Try multiple selectors for connect button
+            connect_selectors = [
+                'button:has-text("Connect")',
+                'button[aria-label*="Connect"]',
+                '.pvs-profile-actions button:has-text("Connect")',
+                'div[data-test-icon="connect-medium"] + span',
+                '.pv-s-profile-actions button:has-text("Connect")',
+                'button.pvs-profile-actions__action:has-text("Connect")'
+            ]
+            
+            connect_clicked = False
+            for selector in connect_selectors:
+                try:
+                    element = await self.page.wait_for_selector(selector, timeout=3000)
+                    if element:
+                        await human_like_delay(100, 200)  # Pause before clicking
+                        await element.click()
+                        connect_clicked = True
+                        print("Clicked Connect button")
+                        break
+                except:
+                    continue
+            
+            if not connect_clicked:
+                # Check if already connected
+                if await self.page.query_selector('button:has-text("Message")'):
+                    return False, "Already connected to this person", profile_url
+                return False, "Connect button not found - profile may be restricted", profile_url
+            
+            # Handle connection modal with realistic delays
+            await human_like_delay(200, 500)
+            
+            # Send connection request without note (just connect)
+            await human_like_delay(100, 200)
+            
+            send_selectors = [
+                'button:has-text("Send")',
+                'button[aria-label*="Send"]',
+                'button.ml1:has-text("Send")',
+                'button[data-test-modal-primary-action]'
+            ]
+            
+            for selector in send_selectors:
+                try:
+                    send_button = await self.page.wait_for_selector(selector, timeout=3000)
+                    if send_button:
+                        await human_like_delay(100, 200)
+                        await send_button.click()
+                        await human_like_delay(200, 500)
+                        print("Connection request sent successfully")
+                        return True, "Connection request sent successfully", profile_url
+                except:
+                    continue
+            
+            return False, "Could not send connection request", profile_url
             
         except Exception as e:
             return False, f"Search error: {str(e)}", None
@@ -394,5 +502,13 @@ class LinkedInAutomationAPI:
         self.is_logged_in = False
 
     async def cleanup(self):
-        """Clean up browser resources."""
+        """Clean up browser resources and save session."""
+        try:
+            # Save session before cleanup if we have a context
+            if self.context and self.is_logged_in:
+                print("Saving session before cleanup...")
+                await self._save_session()
+        except Exception as e:
+            print(f"Error saving session during cleanup: {e}")
+        
         await self._cleanup_browser()

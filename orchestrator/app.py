@@ -11,6 +11,8 @@ from datetime import datetime, timedelta
 from typing import List, Optional
 from pathlib import Path
 import asyncio
+import base64
+import uuid
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -25,6 +27,10 @@ logger = logging.getLogger(__name__)
 # Create data directory if it doesn't exist
 DATA_DIR = Path("data")
 DATA_DIR.mkdir(exist_ok=True)
+
+# Create media directory for audio and photo files
+MEDIA_DIR = DATA_DIR / "media"
+MEDIA_DIR.mkdir(exist_ok=True)
 
 # Rate limiting for WhatsApp messages
 last_whatsapp_send_time = None
@@ -54,6 +60,8 @@ class ContactData(BaseModel):
     phone_numbers: List[str] = Field(default_factory=list, description="List of phone numbers")
     emails: List[str] = Field(default_factory=list, description="List of email addresses")
     urls: List[str] = Field(default_factory=list, description="List of URLs (LinkedIn, website, etc.)")
+    audio: Optional[str] = Field(None, description="Base64 encoded audio file")
+    photo: Optional[str] = Field(None, description="Base64 encoded photo file")
 
     @field_validator('phone_numbers', mode='before')
     @classmethod
@@ -132,18 +140,176 @@ def generate_contact_id() -> str:
     return datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
 
 
-async def save_contact_to_file(contact: ContactData, contact_id: str) -> str:
-    """Save contact data to a JSON file."""
+async def save_media_file(base64_data: str, file_type: str, contact_id: str) -> Optional[str]:
+    """Save base64 encoded media file to disk."""
+    if not base64_data or not base64_data.strip():
+        return None
+    
+    try:
+        # Clean the base64 data by removing whitespace and newlines
+        clean_base64_data = ''.join(base64_data.split())
+        
+        # Validate base64 data
+        if len(clean_base64_data) < 10:  # Too short to be valid media
+            logger.warning(f"{file_type} data too short ({len(clean_base64_data)} chars), skipping")
+            return None
+        
+        # Check if it looks like base64 (basic validation)
+        # Valid base64 characters: A-Z, a-z, 0-9, +, /, =
+        valid_base64_chars = set('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=')
+        if not all(c in valid_base64_chars for c in clean_base64_data):
+            logger.warning(f"{file_type} data contains invalid base64 characters, skipping")
+            return None
+        
+        # Decode base64 data
+        media_data = base64.b64decode(clean_base64_data, validate=True)
+        
+        # Basic size check
+        if len(media_data) < 100:  # Too small to be valid media
+            logger.warning(f"{file_type} decoded data too small ({len(media_data)} bytes), skipping")
+            return None
+        
+        # Generate filename
+        if file_type == "audio":
+            extension = "m4a"  # Common format from iOS
+        elif file_type == "photo":
+            extension = "jpg"  # Common format from iOS
+        else:
+            extension = "bin"
+        
+        filename = f"{contact_id}_{file_type}_{uuid.uuid4().hex[:8]}.{extension}"
+        filepath = MEDIA_DIR / filename
+        
+        # Write file
+        async with aiofiles.open(filepath, 'wb') as f:
+            await f.write(media_data)
+        
+        logger.info(f"Saved {file_type} file: {filepath} ({len(media_data)} bytes)")
+        return str(filepath)
+        
+    except Exception as e:
+        logger.error(f"Error saving {file_type} file: {str(e)}")
+        return None
+
+
+async def send_whatsapp_message_with_photo(contact: ContactData, contact_id: str, photo_path: Optional[str] = None) -> dict:
+    """Send WhatsApp message with photo via the WhatsApp bridge API."""
+    whatsapp_api_url = os.getenv("WHATSAPP_API_URL", "http://localhost:8080")
+    
+    if not contact.phone_numbers:
+        return {"success": False, "message": "No phone numbers available"}
+    
+    # Create personalized message
+    name_parts = [contact.first_name, contact.last_name]
+    full_name = " ".join(part for part in name_parts if part)
+    
+    message = f"Hi {contact.first_name or 'there'}! "
+    message += f"Great meeting you{f' {contact.first_name}' if contact.first_name else ''}. "
+    message += "Thanks for sharing your contact info. Looking forward to staying in touch!"
+    
+    # Try each phone number until one succeeds
+    for i, phone_number in enumerate(contact.phone_numbers):
+        if not phone_number.strip():
+            continue
+            
+        logger.info(f"Trying phone number {i+1}/{len(contact.phone_numbers)}: {phone_number}")
+        
+        result = await try_send_whatsapp_to_number_with_photo(phone_number, message, photo_path, whatsapp_api_url)
+        
+        if result.get("success"):
+            return {
+                "success": True,
+                "message": f"WhatsApp message sent to {clean_phone_number(phone_number)} (number {i+1})",
+                "phone_number_used": clean_phone_number(phone_number)
+            }
+        else:
+            logger.warning(f"Failed to send to {phone_number}: {result.get('message', 'Unknown error')}")
+    
+    return {
+        "success": False,
+        "message": f"Failed to send WhatsApp message to all {len(contact.phone_numbers)} phone numbers"
+    }
+
+
+async def try_send_whatsapp_to_number_with_photo(phone_number: str, message: str, photo_path: Optional[str], whatsapp_api_url: str) -> dict:
+    """Try to send WhatsApp message with photo to a specific number."""
+    cleaned_number = clean_phone_number(phone_number)
+    
+    # Enforce global rate limit
+    await enforce_whatsapp_rate_limit()
+    
+    async with httpx.AsyncClient() as client:
+        try:
+            # Prepare the request payload
+            request_data = {
+                "recipient": cleaned_number,
+                "message": message
+            }
+            
+            # If we have a photo, add the media_path (WhatsApp bridge expects file path)
+            if photo_path and os.path.exists(photo_path):
+                # Convert to absolute path for WhatsApp bridge
+                abs_photo_path = os.path.abspath(photo_path)
+                request_data["media_path"] = abs_photo_path
+                logger.info(f"Sending WhatsApp message with photo to {cleaned_number}: {abs_photo_path}")
+            else:
+                logger.info(f"Sending text-only WhatsApp message to {cleaned_number}")
+            
+            response = await client.post(
+                f"{whatsapp_api_url}/api/send",
+                json=request_data,
+                timeout=30.0
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                if result.get("success"):
+                    logger.info(f"WhatsApp message sent to {cleaned_number}: {result}")
+                    return result
+                else:
+                    logger.warning(f"WhatsApp API returned failure for {cleaned_number}: {result}")
+                    return result
+            else:
+                logger.error(f"WhatsApp API error for {cleaned_number}: {response.status_code} - {response.text}")
+                return {"success": False, "message": f"WhatsApp API error: {response.status_code}"}
+                
+        except httpx.ConnectError:
+            logger.warning("WhatsApp bridge API not available")
+            return {"success": False, "message": "WhatsApp bridge not available"}
+        except Exception as e:
+            logger.error(f"Error connecting to WhatsApp API for {cleaned_number}: {str(e)}")
+            return {"success": False, "message": str(e)}
+
+
+async def save_contact_to_file(contact: ContactData, contact_id: str) -> tuple[str, Optional[str], Optional[str]]:
+    """Save contact data to a JSON file and handle media files."""
     filename = DATA_DIR / f"contact_{contact_id}.json"
+
+    # Save audio and photo files if present
+    audio_path = None
+    photo_path = None
+    
+    if contact.audio:
+        audio_path = await save_media_file(contact.audio, "audio", contact_id)
+    
+    if contact.photo:
+        photo_path = await save_media_file(contact.photo, "photo", contact_id)
 
     contact_dict = contact.dict()
     contact_dict["id"] = contact_id
     contact_dict["timestamp"] = datetime.now().isoformat()
+    
+    # Add file paths to contact data, remove base64 data
+    contact_dict["audio_file"] = audio_path
+    contact_dict["photo_file"] = photo_path
+    # Remove base64 data from JSON (too large)
+    contact_dict.pop("audio", None)
+    contact_dict.pop("photo", None)
 
     async with aiofiles.open(filename, 'w') as f:
         await f.write(json.dumps(contact_dict, indent=2))
 
-    return str(filename)
+    return str(filename), audio_path, photo_path
 
 
 def clean_phone_number(phone_number: str) -> str:
@@ -383,16 +549,24 @@ async def receive_contact(contact: ContactData, background_tasks: BackgroundTask
         # Generate unique ID for this contact
         contact_id = generate_contact_id()
 
-        # Save contact to file
-        filename = await save_contact_to_file(contact, contact_id)
+        # Save contact to file and get media file paths
+        filename, audio_path, photo_path = await save_contact_to_file(contact, contact_id)
         logger.info(f"Saved contact {contact_id} to {filename}")
+        
+        if audio_path:
+            logger.info(f"Saved audio file: {audio_path}")
+        if photo_path:
+            logger.info(f"Saved photo file: {photo_path}")
 
         # Send WhatsApp message if phone number is available
         whatsapp_status = "No WhatsApp action taken"
         if contact.phone_numbers:
-            whatsapp_result = await send_whatsapp_message(contact, contact_id)
+            # Use the new function that supports photo sending
+            whatsapp_result = await send_whatsapp_message_with_photo(contact, contact_id, photo_path)
             if whatsapp_result.get("success"):
                 whatsapp_status = "WhatsApp message sent successfully"
+                if photo_path:
+                    whatsapp_status += " (with photo)"
             else:
                 whatsapp_status = f"WhatsApp failed: {whatsapp_result.get('message', 'Unknown error')}"
 
