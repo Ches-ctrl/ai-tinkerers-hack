@@ -7,13 +7,14 @@ Saves contact information and optionally triggers LinkedIn connection requests.
 import os
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Optional
 from pathlib import Path
+import asyncio
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 import httpx
 import aiofiles
 
@@ -24,6 +25,10 @@ logger = logging.getLogger(__name__)
 # Create data directory if it doesn't exist
 DATA_DIR = Path("data")
 DATA_DIR.mkdir(exist_ok=True)
+
+# Rate limiting for WhatsApp messages
+last_whatsapp_send_time = None
+WHATSAPP_RATE_LIMIT_SECONDS = 2  # Don't send more than 1 message every 2 seconds
 
 app = FastAPI(
     title="Contact Orchestrator API",
@@ -50,22 +55,55 @@ class ContactData(BaseModel):
     emails: List[str] = Field(default_factory=list, description="List of email addresses")
     urls: List[str] = Field(default_factory=list, description="List of URLs (LinkedIn, website, etc.)")
 
-    @validator('phone_numbers', pre=True)
+    @field_validator('phone_numbers', mode='before')
+    @classmethod
     def parse_phone_numbers(cls, v):
         if isinstance(v, str):
-            return [v] if v.strip() else []
+            if not v.strip():
+                return []
+            # Split by newlines and commas, then clean each number
+            numbers = []
+            # Split by newlines first, then by commas
+            for line in v.split('\n'):
+                for num in line.split(','):
+                    cleaned = num.strip()
+                    if cleaned:
+                        numbers.append(cleaned)
+            return numbers
         return v or []
 
-    @validator('emails', pre=True)
+    @field_validator('emails', mode='before')
+    @classmethod
     def parse_emails(cls, v):
         if isinstance(v, str):
-            return [v] if v.strip() else []
+            if not v.strip():
+                return []
+            # Split by newlines and commas, then clean each email
+            emails = []
+            # Split by newlines first, then by commas
+            for line in v.split('\n'):
+                for email in line.split(','):
+                    cleaned = email.strip()
+                    if cleaned:
+                        emails.append(cleaned)
+            return emails
         return v or []
 
-    @validator('urls', pre=True)
+    @field_validator('urls', mode='before')
+    @classmethod
     def parse_urls(cls, v):
         if isinstance(v, str):
-            return [v] if v.strip() else []
+            if not v.strip():
+                return []
+            # Split by newlines and commas, then clean each URL
+            urls = []
+            # Split by newlines first, then by commas
+            for line in v.split('\n'):
+                for url in line.split(','):
+                    cleaned = url.strip()
+                    if cleaned:
+                        urls.append(cleaned)
+            return urls
         return v or []
 
     class Config:
@@ -106,6 +144,109 @@ async def save_contact_to_file(contact: ContactData, contact_id: str) -> str:
         await f.write(json.dumps(contact_dict, indent=2))
 
     return str(filename)
+
+
+def clean_phone_number(phone_number: str) -> str:
+    """Clean and normalize phone number for WhatsApp."""
+    # Remove spaces, dashes, parentheses, dots
+    cleaned = phone_number.replace(" ", "").replace("-", "").replace("(", "").replace(")", "").replace(".", "")
+    # Remove + if present, WhatsApp bridge expects raw number
+    if cleaned.startswith("+"):
+        cleaned = cleaned[1:]
+    return cleaned
+
+
+async def enforce_whatsapp_rate_limit():
+    """Enforce global WhatsApp rate limit of 1 message every 2 seconds."""
+    global last_whatsapp_send_time
+    now = datetime.now()
+    
+    if last_whatsapp_send_time is not None:
+        time_since_last = now - last_whatsapp_send_time
+        if time_since_last < timedelta(seconds=WHATSAPP_RATE_LIMIT_SECONDS):
+            wait_time = WHATSAPP_RATE_LIMIT_SECONDS - time_since_last.total_seconds()
+            logger.info(f"Rate limiting: waiting {wait_time:.1f} seconds before sending WhatsApp message")
+            await asyncio.sleep(wait_time)
+    
+    last_whatsapp_send_time = datetime.now()
+
+
+async def try_send_whatsapp_to_number(phone_number: str, message: str, whatsapp_api_url: str) -> dict:
+    """Try to send WhatsApp message to a specific number."""
+    cleaned_number = clean_phone_number(phone_number)
+    
+    # Enforce global rate limit
+    await enforce_whatsapp_rate_limit()
+    
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(
+                f"{whatsapp_api_url}/api/send",
+                json={
+                    "recipient": cleaned_number,
+                    "message": message
+                },
+                timeout=30.0
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                if result.get("success"):
+                    logger.info(f"WhatsApp message sent to {cleaned_number}: {result}")
+                    return result
+                else:
+                    logger.warning(f"WhatsApp API returned failure for {cleaned_number}: {result}")
+                    return result
+            else:
+                logger.error(f"WhatsApp API error for {cleaned_number}: {response.status_code} - {response.text}")
+                return {"success": False, "message": f"WhatsApp API error: {response.status_code}"}
+                
+        except httpx.ConnectError:
+            logger.warning("WhatsApp bridge API not available")
+            return {"success": False, "message": "WhatsApp bridge not available"}
+        except Exception as e:
+            logger.error(f"Error connecting to WhatsApp API for {cleaned_number}: {str(e)}")
+            return {"success": False, "message": str(e)}
+
+
+async def send_whatsapp_message(contact: ContactData, contact_id: str) -> dict:
+    """Send WhatsApp message via the WhatsApp bridge API with fallback to multiple numbers."""
+    whatsapp_api_url = os.getenv("WHATSAPP_API_URL", "http://localhost:8080")
+    
+    if not contact.phone_numbers:
+        return {"success": False, "message": "No phone numbers available"}
+    
+    # Create personalized message
+    name_parts = [contact.first_name, contact.last_name]
+    full_name = " ".join(part for part in name_parts if part)
+    
+    message = f"Hi {contact.first_name or 'there'}! "
+    message += f"Great meeting you{f' {contact.first_name}' if contact.first_name else ''}. "
+    message += "Thanks for sharing your contact info. Looking forward to staying in touch!"
+    
+    # Try each phone number until one succeeds
+    for i, phone_number in enumerate(contact.phone_numbers):
+        if not phone_number.strip():
+            continue
+            
+        logger.info(f"Trying phone number {i+1}/{len(contact.phone_numbers)}: {phone_number}")
+        
+        result = await try_send_whatsapp_to_number(phone_number, message, whatsapp_api_url)
+        
+        if result.get("success"):
+            return {
+                "success": True,
+                "message": f"WhatsApp message sent to {clean_phone_number(phone_number)} (number {i+1})",
+                "phone_number_used": clean_phone_number(phone_number)
+            }
+        else:
+            logger.warning(f"Failed to send to {phone_number}: {result.get('message', 'Unknown error')}")
+            # Rate limit is already enforced in try_send_whatsapp_to_number
+    
+    return {
+        "success": False,
+        "message": f"Failed to send WhatsApp message to all {len(contact.phone_numbers)} phone numbers"
+    }
 
 
 async def trigger_linkedin_connection(contact: ContactData, contact_id: str) -> dict:
@@ -246,10 +387,29 @@ async def receive_contact(contact: ContactData, background_tasks: BackgroundTask
         filename = await save_contact_to_file(contact, contact_id)
         logger.info(f"Saved contact {contact_id} to {filename}")
 
+        # Send WhatsApp message if phone number is available
+        whatsapp_status = "No WhatsApp action taken"
+        if contact.phone_numbers:
+            whatsapp_result = await send_whatsapp_message(contact, contact_id)
+            if whatsapp_result.get("success"):
+                whatsapp_status = "WhatsApp message sent successfully"
+            else:
+                whatsapp_status = f"WhatsApp failed: {whatsapp_result.get('message', 'Unknown error')}"
+
         # Check if we should trigger LinkedIn connection
         linkedin_status = "No LinkedIn action taken"
+        
+        # Try LinkedIn connection if we have name or LinkedIn URL
+        should_try_linkedin = False
+        full_name = " ".join(part for part in [contact.first_name, contact.last_name] if part)
+        
         if contact.urls and any("linkedin.com" in url.lower() for url in contact.urls):
-            # Trigger LinkedIn connection in background
+            should_try_linkedin = True
+        elif full_name:  # If we have a name, we can try searching
+            should_try_linkedin = True
+        
+        if should_try_linkedin:
+            # Trigger LinkedIn connection
             linkedin_result = await trigger_linkedin_connection(contact, contact_id)
             if linkedin_result.get("success"):
                 linkedin_status = "LinkedIn connection request sent"
@@ -260,7 +420,7 @@ async def receive_contact(contact: ContactData, background_tasks: BackgroundTask
             success=True,
             message=f"Contact saved successfully",
             contact_id=contact_id,
-            linkedin_status=linkedin_status
+            linkedin_status=f"{whatsapp_status} | {linkedin_status}"
         )
 
     except Exception as e:

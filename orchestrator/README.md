@@ -47,9 +47,10 @@ ngrok http 8000
 ## Features
 
 - **Automatic JSON Storage**: Saves all contacts to `data/` directory
+- **WhatsApp Integration**: Automatically sends welcome message if phone number provided
 - **LinkedIn Integration**: Automatically triggers connection if LinkedIn URL provided
 - **Contact Management**: List, view, and manually trigger LinkedIn connections
-- **Background Processing**: LinkedIn connections happen asynchronously
+- **Background Processing**: WhatsApp and LinkedIn actions happen asynchronously
 
 ## API Endpoints
 
@@ -59,22 +60,25 @@ ngrok http 8000
 - `POST /api/trigger-linkedin/{id}` - Manually trigger LinkedIn connection
 - `GET /health` - Health check
 
-## Running with LinkedIn Worker
+## Running with WhatsApp Bridge and LinkedIn Worker
 
-1. Start LinkedIn worker first (port 8001):
+1. Start WhatsApp bridge first (port 8080):
+```bash
+cd ../whatsapp-bridge
+go run main.go
+```
+
+2. Start LinkedIn worker (port 8001):
 ```bash
 cd ../linkedin-worker
 python app.py
 ```
 
-2. Then start orchestrator:
+3. Set environment variables and start orchestrator:
 ```bash
-python app.py
-```
-
-3. Set environment variable for LinkedIn API:
-```bash
+export WHATSAPP_API_URL=http://localhost:8080
 export LINKEDIN_API_URL=http://localhost:8001
+python app.py
 ```
 
 ## Data Storage

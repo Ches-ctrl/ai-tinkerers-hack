@@ -32,8 +32,8 @@ async def lifespan(app: FastAPI):
     global automation_instance
     try:
         automation_instance = LinkedInAutomationAPI()
-        await automation_instance.initialize()
-        logger.info("LinkedIn automation initialized successfully")
+        # Don't initialize on startup - do it on first request
+        logger.info("LinkedIn automation instance created")
         yield
     finally:
         if automation_instance:
@@ -91,9 +91,13 @@ class HealthResponse(BaseModel):
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
     """Check API health and LinkedIn connection status."""
+    linkedin_connected = False
+    if automation_instance:
+        linkedin_connected = automation_instance.is_logged_in
+    
     return HealthResponse(
         status="healthy",
-        linkedin_connected=automation_instance is not None and automation_instance.is_logged_in
+        linkedin_connected=linkedin_connected
     )
 
 
@@ -107,8 +111,13 @@ async def add_connection(request: ConnectionRequest):
     if not automation_instance:
         raise HTTPException(status_code=503, detail="LinkedIn automation not initialized")
     
+    # Initialize browser if not already done
     if not automation_instance.is_logged_in:
-        raise HTTPException(status_code=401, detail="Not logged into LinkedIn")
+        try:
+            await automation_instance.initialize()
+        except Exception as e:
+            logger.error(f"Failed to initialize automation: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Failed to initialize: {str(e)}")
     
     if not request.profile_url and not request.name:
         raise HTTPException(status_code=400, detail="Either profile_url or name must be provided")
