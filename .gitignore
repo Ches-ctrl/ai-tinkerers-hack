@@ -1,3 +1,4 @@
 whatsapp-bridge/store/*
 .env
 */.env
+*/.venv

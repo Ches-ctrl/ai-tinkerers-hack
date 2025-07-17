@@ -12,7 +12,7 @@ from typing import Tuple, Optional
 from urllib.parse import quote
 from pathlib import Path
 
-from playwright.async_api import async_playwright, TimeoutError
+from playwright.async_api import async_playwright, TimeoutError, Page
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -345,25 +345,68 @@ class LinkedInAutomationAPI:
             return False, f"Error accessing profile: {str(e)}", profile_url
     
     async def _add_by_search(self, name: str, message: Optional[str] = None) -> Tuple[bool, str, Optional[str]]:
-        """Search for a person and add them as a connection using global search."""
+        """Search for a person and add them as a connection using the search box."""
         try:
-            # Use global search URL format like the example provided
-            search_url = f'https://www.linkedin.com/search/results/all/?keywords={quote(name)}&origin=GLOBAL_SEARCH_HEADER&sid=YDb'
             print(f"Searching LinkedIn for: {name}")
-            print(f"Search URL: {search_url}")
+            print(f"Current URL: {self.page.url}")
             
-            await self.page.goto(search_url, wait_until='networkidle')
-            await human_like_delay(200, 500)
+            # First, make sure we're on a LinkedIn page where we can search
+            if 'linkedin.com' not in self.page.url:
+                print("Not on LinkedIn, navigating to feed page...")
+                await self.page.goto('https://www.linkedin.com/feed/', wait_until='networkidle')
+                await human_like_delay(500, 1000)
             
-            # Look for "People" tab and click it to filter to people results
-            try:
-                people_tab = await self.page.wait_for_selector('button:has-text("People")', timeout=3000)
-                if people_tab:
-                    await people_tab.click()
-                    await human_like_delay(200, 500)
-                    print("Clicked People tab to filter results")
-            except:
-                print("Could not find People tab, continuing with all results")
+            # Find and click the search box
+            search_selectors = [
+                'input[placeholder*="Search"]',
+                '.search-global-typeahead__input',
+                'input[role="combobox"]',
+                '#global-nav-search .search-global-typeahead__input'
+            ]
+            
+            search_input = None
+            for selector in search_selectors:
+                try:
+                    search_input = await self.page.wait_for_selector(selector, timeout=3000)
+                    if search_input:
+                        print(f"Found search input with selector: {selector}")
+                        break
+                except:
+                    continue
+            
+            if not search_input:
+                print("Could not find search input, trying direct URL approach...")
+                # Fallback to direct URL
+                search_url = f'https://www.linkedin.com/search/results/people/?keywords={quote(name)}&origin=GLOBAL_SEARCH_HEADER'
+                print(f"Using direct search URL: {search_url}")
+                await self.page.goto(search_url, wait_until='networkidle')
+                await human_like_delay(500, 1000)
+            else:
+                # Clear any existing text and type the search query
+                await search_input.click()
+                await human_like_delay(200, 400)
+                await search_input.fill('')  # Clear existing text
+                await human_like_delay(100, 200)
+                await search_input.type(name)
+                await human_like_delay(500, 1000)
+                
+                # Press Enter or click search
+                await search_input.press('Enter')
+                await human_like_delay(1000, 2000)
+                
+                # Wait for search results to load
+                await self.page.wait_for_load_state('networkidle')
+                await human_like_delay(500, 1000)
+                
+                # Click on People tab if it exists
+                try:
+                    people_tab = await self.page.wait_for_selector('button:has-text("People")', timeout=3000)
+                    if people_tab:
+                        await people_tab.click()
+                        await human_like_delay(500, 1000)
+                        print("Clicked People tab to filter results")
+                except:
+                    print("Could not find People tab, continuing with all results")
             
             # Scroll a bit to make it look more natural
             await human_like_scroll(self.page, 200)
@@ -373,19 +416,36 @@ class LinkedInAutomationAPI:
                 '.entity-result__title-text a',
                 '.search-result__title-text a',
                 '[data-test-app-aware-link] .entity-result__title-text a',
-                '.reusable-search-simple-insight a'
+                '.reusable-search-simple-insight a',
+                '.entity-result__content a[href*="/in/"]',
+                '.search-result-card__title a',
+                'a[href*="/in/"][data-test-app-aware-link]'
             ]
             
             first_result = None
             for selector in result_selectors:
                 try:
-                    first_result = await self.page.wait_for_selector(selector, timeout=3000)
+                    # Wait for any profile links to appear
+                    await self.page.wait_for_selector(selector, timeout=5000)
+                    first_result = await self.page.query_selector(selector)
                     if first_result:
+                        print(f"Found profile result with selector: {selector}")
                         break
                 except:
                     continue
             
             if not first_result:
+                print(f"No profile results found for '{name}'. Available elements:")
+                # Debug: print available elements
+                try:
+                    elements = await self.page.query_selector_all('a[href*="/in/"]')
+                    print(f"Found {len(elements)} profile links")
+                    for i, elem in enumerate(elements[:3]):  # Show first 3
+                        href = await elem.get_attribute('href')
+                        text = await elem.text_content()
+                        print(f"  {i+1}. {text} -> {href}")
+                except:
+                    pass
                 return False, f"No profile results found for '{name}'", None
             
             # Get profile URL for return value
@@ -394,77 +454,199 @@ class LinkedInAutomationAPI:
                 profile_url = f"https://www.linkedin.com{profile_url}"
             
             print(f"Found profile: {profile_url}")
-            print("Clicking on profile link...")
             
-            # Click on the profile link to navigate to the profile page
-            await human_like_delay(100, 200)  # Pause before clicking
-            await first_result.click()
+            # Look for ANY Connect button on the page (search results or profile)
+            print("Looking for Connect button anywhere on the page...")
             
-            # Wait for profile page to load
-            await self.page.wait_for_load_state('networkidle')
-            await human_like_delay(200, 500)
-            
-            print(f"Navigated to profile page: {self.page.url}")
-            
-            # Now we're on the profile page, scroll down a bit to simulate reading
-            await human_like_scroll(self.page, 300)
-            await human_like_delay(100, 200)
-            
-            # Try multiple selectors for connect button
-            connect_selectors = [
-                'button:has-text("Connect")',
-                'button[aria-label*="Connect"]',
-                '.pvs-profile-actions button:has-text("Connect")',
-                'div[data-test-icon="connect-medium"] + span',
-                '.pv-s-profile-actions button:has-text("Connect")',
-                'button.pvs-profile-actions__action:has-text("Connect")'
-            ]
-            
+            # Try to find Connect buttons using different strategies
             connect_clicked = False
-            for selector in connect_selectors:
+            
+            # Strategy 1: Direct text search - most reliable
+            try:
+                print("Strategy 1: Looking for buttons with 'Connect' text...")
+                all_buttons = await self.page.query_selector_all('button')
+                for button in all_buttons:
+                    button_text = await button.text_content()
+                    if button_text and 'Connect' in button_text.strip():
+                        is_visible = await button.is_visible()
+                        if is_visible:
+                            print(f"Found Connect button with text: '{button_text.strip()}'")
+                            await human_like_delay(100, 200)
+                            await button.click()
+                            connect_clicked = True
+                            print("Successfully clicked Connect button")
+                            break
+            except Exception as e:
+                print(f"Strategy 1 failed: {str(e)}")
+            
+            # Strategy 2: Aria-label search if Strategy 1 failed
+            if not connect_clicked:
                 try:
-                    element = await self.page.wait_for_selector(selector, timeout=3000)
-                    if element:
-                        await human_like_delay(100, 200)  # Pause before clicking
-                        await element.click()
-                        connect_clicked = True
-                        print("Clicked Connect button")
-                        break
-                except:
-                    continue
+                    print("Strategy 2: Looking for buttons with Connect aria-label...")
+                    connect_buttons = await self.page.query_selector_all('button[aria-label*="Connect"]')
+                    for button in connect_buttons:
+                        is_visible = await button.is_visible()
+                        if is_visible:
+                            aria_label = await button.get_attribute('aria-label')
+                            print(f"Found Connect button with aria-label: '{aria_label}'")
+                            await human_like_delay(100, 200)
+                            await button.click()
+                            connect_clicked = True
+                            print("Successfully clicked Connect button")
+                            break
+                except Exception as e:
+                    print(f"Strategy 2 failed: {str(e)}")
+            
+            # Strategy 3: Class-based search if previous strategies failed
+            if not connect_clicked:
+                try:
+                    print("Strategy 3: Looking with class-based selectors...")
+                    all_connect_selectors = [
+                        '.artdeco-button:has-text("Connect")',
+                        'button.artdeco-button:has-text("Connect")',
+                        '.entity-result button:has-text("Connect")',
+                        '.search-result button:has-text("Connect")',
+                        'button[data-test-app-aware-link]:has-text("Connect")',
+                        'button.artdeco-button--2:has-text("Connect")'
+                    ]
+                    
+                    for i, selector in enumerate(all_connect_selectors):
+                        try:
+                            print(f"Trying selector {i+1}/{len(all_connect_selectors)}: {selector}")
+                            connect_buttons = await self.page.query_selector_all(selector)
+                            if connect_buttons:
+                                print(f"Found {len(connect_buttons)} Connect button(s) with selector: {selector}")
+                                for button in connect_buttons:
+                                    is_visible = await button.is_visible()
+                                    if is_visible:
+                                        print(f"Clicking visible Connect button")
+                                        await human_like_delay(100, 200)
+                                        await button.click()
+                                        connect_clicked = True
+                                        print("Successfully clicked Connect button")
+                                        break
+                                if connect_clicked:
+                                    break
+                        except Exception as e:
+                            print(f"Selector {selector} failed: {str(e)}")
+                            continue
+                except Exception as e:
+                    print(f"Strategy 3 failed: {str(e)}")
+            
+            # Strategy 4: Click on the profile and then look for Connect button
+            if not connect_clicked:
+                try:
+                    print("Strategy 4: Clicking on profile link to go to profile page...")
+                    await human_like_delay(100, 200)
+                    await first_result.click()
+                    await human_like_delay(2000, 3000)  # Wait for profile to load
+                    
+                    # Now look for Connect button on the profile page
+                    profile_connect_selectors = [
+                        'button:has-text("Connect")',
+                        'button[aria-label*="Connect"]',
+                        '.pvs-profile-actions button:has-text("Connect")',
+                        '.pv-s-profile-actions button:has-text("Connect")'
+                    ]
+                    
+                    for selector in profile_connect_selectors:
+                        try:
+                            connect_button = await self.page.wait_for_selector(selector, timeout=3000)
+                            if connect_button:
+                                is_visible = await connect_button.is_visible()
+                                if is_visible:
+                                    print(f"Found Connect button on profile page with selector: {selector}")
+                                    await human_like_delay(100, 200)
+                                    await connect_button.click()
+                                    connect_clicked = True
+                                    print("Successfully clicked Connect button on profile page")
+                                    break
+                        except:
+                            continue
+                except Exception as e:
+                    print(f"Strategy 4 failed: {str(e)}")
+            
+            if connect_clicked:
+                # Connect button clicked, wait for modal
+                await human_like_delay(1000, 2000)  # Wait for modal to appear
+                print("Connect button clicked, handling modal...")
+                
+                # Handle the connection modal
+                try:
+                    # Look for the modal and handle it
+                    modal_selectors = [
+                        '[data-test-modal-container]',
+                        '.artdeco-modal',
+                        '.send-invite',
+                        '[role="dialog"]'
+                    ]
+                    
+                    modal_found = False
+                    for selector in modal_selectors:
+                        try:
+                            modal = await self.page.wait_for_selector(selector, timeout=3000)
+                            if modal:
+                                print(f"Found modal with selector: {selector}")
+                                modal_found = True
+                                break
+                        except:
+                            continue
+                    
+                    if modal_found:
+                        # Look for Send button in modal
+                        send_selectors = [
+                            'button:has-text("Send")',
+                            'button[aria-label*="Send"]',
+                            'button.ml1:has-text("Send")',
+                            'button[data-test-modal-primary-action]',
+                            'button.artdeco-button--primary:has-text("Send")'
+                        ]
+                        
+                        send_clicked = False
+                        for selector in send_selectors:
+                            try:
+                                send_button = await self.page.wait_for_selector(selector, timeout=3000)
+                                if send_button:
+                                    print(f"Found Send button with selector: {selector}")
+                                    await human_like_delay(100, 200)
+                                    await send_button.click()
+                                    send_clicked = True
+                                    print("Connection request sent successfully")
+                                    break
+                            except:
+                                continue
+                        
+                        if send_clicked:
+                            await human_like_delay(500, 1000)
+                            return True, "Connection request sent successfully", profile_url
+                        else:
+                            return False, "Could not find Send button in modal", profile_url
+                    else:
+                        print("No modal found, connection might have been sent immediately")
+                        return True, "Connection request sent (no modal needed)", profile_url
+                        
+                except Exception as e:
+                    print(f"Error handling modal: {str(e)}")
+                    return False, f"Error handling connection modal: {str(e)}", profile_url
+            else:
+                print("No Connect button found anywhere on page")
             
             if not connect_clicked:
+                # Debug: Check what buttons are actually available
+                print("Connect button not found. Available buttons:")
+                try:
+                    all_buttons = await self.page.query_selector_all('button')
+                    for i, button in enumerate(all_buttons[:10]):  # Show first 10 buttons
+                        text = await button.text_content()
+                        aria_label = await button.get_attribute('aria-label')
+                        print(f"  {i+1}. Text: '{text}' | Aria-label: '{aria_label}'")
+                except:
+                    pass
+                
                 # Check if already connected
                 if await self.page.query_selector('button:has-text("Message")'):
                     return False, "Already connected to this person", profile_url
                 return False, "Connect button not found - profile may be restricted", profile_url
-            
-            # Handle connection modal with realistic delays
-            await human_like_delay(200, 500)
-            
-            # Send connection request without note (just connect)
-            await human_like_delay(100, 200)
-            
-            send_selectors = [
-                'button:has-text("Send")',
-                'button[aria-label*="Send"]',
-                'button.ml1:has-text("Send")',
-                'button[data-test-modal-primary-action]'
-            ]
-            
-            for selector in send_selectors:
-                try:
-                    send_button = await self.page.wait_for_selector(selector, timeout=3000)
-                    if send_button:
-                        await human_like_delay(100, 200)
-                        await send_button.click()
-                        await human_like_delay(200, 500)
-                        print("Connection request sent successfully")
-                        return True, "Connection request sent successfully", profile_url
-                except:
-                    continue
-            
-            return False, "Could not send connection request", profile_url
             
         except Exception as e:
             return False, f"Search error: {str(e)}", None

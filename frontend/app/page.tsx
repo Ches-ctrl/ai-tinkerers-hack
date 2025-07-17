@@ -6,6 +6,7 @@ import InteractionCard from '@/components/InteractionCard';
 import TriggerButton from '@/components/TriggerButton';
 import ActivityFeed from '@/components/ActivityFeed';
 import StatsOverview from '@/components/StatsOverview';
+import MemoriesGallery from '@/components/MemoriesGallery';
 
 interface MeetingInteraction {
   id: string;
@@ -224,6 +225,11 @@ export default function Home() {
             </div>
           </div>
         )}
+
+        {/* Meeting Memories Gallery */}
+        <div className="mb-8">
+          <MemoriesGallery />
+        </div>
 
         {/* Activity Feed */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">

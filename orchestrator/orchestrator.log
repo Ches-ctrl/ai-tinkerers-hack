@@ -1,0 +1,12 @@
+INFO:     Started server process [20274]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:60832 - "HEAD /api/media/20250717_203233_124_photo_90fd6492.jpg HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:60856 - "GET /api/media/20250717_203233_124_photo_90fd6492.jpg HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60900 - "GET /api/contacts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60905 - "GET /api/media/20250717_204935_509_photo_76493128.jpg HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60906 - "GET /api/media/20250717_203233_124_photo_90fd6492.jpg HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60907 - "GET /api/media/20250717_202956_281_photo_59ce4833.jpg HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61509 - "GET /api/contacts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61512 - "GET /api/media/20250717_204935_509_photo_76493128.jpg HTTP/1.1" 200 OK

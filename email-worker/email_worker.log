@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+  File "/Users/charliecheesman/code/Ches-ctrl/cc-hackathons/ai-tinkerers-hack/email-worker/email_worker_api.py", line 13, in <module>
+    import aiosmtplib
+ModuleNotFoundError: No module named 'aiosmtplib'

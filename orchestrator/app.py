@@ -16,6 +16,7 @@ import uuid
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, field_validator
 import httpx
 import aiofiles
@@ -615,10 +616,7 @@ async def list_contacts():
         # Sort by timestamp (newest first)
         contacts.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
 
-        return {
-            "count": len(contacts),
-            "contacts": contacts
-        }
+        return contacts
     except Exception as e:
         logger.error(f"Error listing contacts: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -670,6 +668,51 @@ async def manually_trigger_linkedin(contact_id: str):
 
     except Exception as e:
         logger.error(f"Error triggering LinkedIn: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/media/{filename}")
+async def serve_media(filename: str):
+    """Serve media files (photos, audio) from the media directory."""
+    try:
+        media_path = MEDIA_DIR / filename
+        
+        if not media_path.exists():
+            raise HTTPException(status_code=404, detail="Media file not found")
+        
+        # Check if it's a safe file type
+        allowed_extensions = {'.jpg', '.jpeg', '.png', '.gif', '.mp3', '.wav', '.m4a', '.ogg'}
+        file_ext = media_path.suffix.lower()
+        
+        if file_ext not in allowed_extensions:
+            raise HTTPException(status_code=400, detail="File type not allowed")
+        
+        # Determine media type
+        if file_ext in {'.jpg', '.jpeg'}:
+            media_type = "image/jpeg"
+        elif file_ext == '.png':
+            media_type = "image/png"
+        elif file_ext == '.gif':
+            media_type = "image/gif"
+        elif file_ext == '.mp3':
+            media_type = "audio/mpeg"
+        elif file_ext == '.wav':
+            media_type = "audio/wav"
+        elif file_ext == '.m4a':
+            media_type = "audio/mp4"
+        elif file_ext == '.ogg':
+            media_type = "audio/ogg"
+        else:
+            media_type = "application/octet-stream"
+        
+        return FileResponse(
+            path=str(media_path),
+            media_type=media_type,
+            filename=filename
+        )
+        
+    except Exception as e:
+        logger.error(f"Error serving media file {filename}: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
