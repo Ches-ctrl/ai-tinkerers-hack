@@ -1,0 +1,3 @@
+whatsapp-bridge/store/*
+.env
+*/.env
