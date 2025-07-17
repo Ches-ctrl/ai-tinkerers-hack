@@ -123,10 +123,12 @@ async def add_connection(request: ConnectionRequest):
         raise HTTPException(status_code=400, detail="Either profile_url or name must be provided")
     
     try:
+        # Add timeout to prevent the operation from hanging
         success, result_message, profile_url = await automation_instance.add_connection(
             profile_url=request.profile_url,
             name=request.name,
-            message=request.message
+            message=request.message,
+            timeout_seconds=30  # 30 second timeout
         )
         
         return ConnectionResponse(

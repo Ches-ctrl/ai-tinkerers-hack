@@ -33,9 +33,40 @@ export default function Home() {
     connectionsAdded: 0,
     audiosCaptured: 0
   });
+  const [realTimeStats, setRealTimeStats] = useState({
+    totalContacts: 0,
+    contactsWithPhotos: 0,
+    contactsWithEmails: 0,
+    contactsWithPhones: 0
+  });
+
+  // Fetch real-time statistics
+  const fetchRealTimeStats = async () => {
+    try {
+      const response = await fetch('http://localhost:8000/api/contacts');
+      if (response.ok) {
+        const contacts = await response.json();
+        setRealTimeStats({
+          totalContacts: contacts.length,
+          contactsWithPhotos: contacts.filter((c: any) => c.photo_file).length,
+          contactsWithEmails: contacts.filter((c: any) => c.emails && c.emails.length > 0).length,
+          contactsWithPhones: contacts.filter((c: any) => c.phone_numbers && c.phone_numbers.length > 0).length
+        });
+      }
+    } catch (error) {
+      console.error('Error fetching real-time stats:', error);
+    }
+  };
 
   // Mock data for demonstration
   useEffect(() => {
+    fetchRealTimeStats();
+    
+    // Update stats every 5 seconds
+    const interval = setInterval(() => {
+      fetchRealTimeStats();
+    }, 5000);
+    
     const mockInteractions: MeetingInteraction[] = [
       {
         id: '1',
@@ -106,6 +137,8 @@ export default function Home() {
       connectionsAdded: 38,
       audiosCaptured: 50
     });
+    
+    return () => clearInterval(interval);
   }, []);
 
   const handleTrigger = async () => {
@@ -188,7 +221,7 @@ export default function Home() {
 
       <div className="container mx-auto px-6 py-8 max-w-7xl flex-1">
         {/* Stats Overview */}
-        <StatsOverview stats={stats} />
+        <StatsOverview stats={stats} realTimeStats={realTimeStats} />
 
         {/* Latest Meeting Section */}
         {latestMeeting && (

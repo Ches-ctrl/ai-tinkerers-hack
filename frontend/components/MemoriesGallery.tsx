@@ -30,14 +30,26 @@ export default function MemoriesGallery() {
   const [memories, setMemories] = useState<MemoryItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedMemory, setSelectedMemory] = useState<MemoryItem | null>(null);
+  const [lastUpdateTime, setLastUpdateTime] = useState<Date>(new Date());
 
   useEffect(() => {
     fetchMemories();
+    
+    // Set up automatic refresh every 5 seconds
+    const interval = setInterval(() => {
+      fetchMemories();
+    }, 5000);
+    
+    return () => clearInterval(interval);
   }, []);
 
   const fetchMemories = async () => {
     try {
-      setLoading(true);
+      // Don't show loading spinner on automatic refreshes
+      const isInitialLoad = memories.length === 0;
+      if (isInitialLoad) {
+        setLoading(true);
+      }
       
       // Fetch contact data from orchestrator
       const response = await fetch('http://localhost:8000/api/contacts');
@@ -67,13 +79,26 @@ export default function MemoriesGallery() {
         }))
         .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
       
+      // Check if we have new memories
+      const hasNewMemories = memoryItems.length > memories.length;
+      
       setMemories(memoryItems);
+      setLastUpdateTime(new Date());
+      
+      // Show a subtle notification if new memories were added
+      if (hasNewMemories && !isInitialLoad) {
+        console.log('New memories added!');
+      }
     } catch (error) {
       console.error('Error fetching memories:', error);
-      // Fallback to empty array if API fails
-      setMemories([]);
+      // Don't clear existing memories on error, just log it
+      if (memories.length === 0) {
+        setMemories([]);
+      }
     } finally {
-      setLoading(false);
+      if (memories.length === 0) {
+        setLoading(false);
+      }
     }
   };
 
@@ -117,13 +142,22 @@ export default function MemoriesGallery() {
           <div className="px-3 py-1 bg-blue-50 rounded-full">
             <span className="text-sm font-medium text-blue-700">{memories.length}</span>
           </div>
+          <div className="flex items-center gap-2 text-xs text-gray-500">
+            <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+            <span>Auto-updating every 5s</span>
+          </div>
         </div>
-        <button
-          onClick={fetchMemories}
-          className="text-sm text-blue-600 hover:text-blue-700 font-medium"
-        >
-          Refresh
-        </button>
+        <div className="flex items-center gap-3">
+          <div className="text-xs text-gray-500">
+            Last update: {formatTime(lastUpdateTime)}
+          </div>
+          <button
+            onClick={fetchMemories}
+            className="px-3 py-1 bg-blue-100 hover:bg-blue-200 text-blue-700 rounded-lg text-sm font-medium transition-colors"
+          >
+            Refresh Now
+          </button>
+        </div>
       </div>
 
       {memories.length === 0 ? (
@@ -134,10 +168,13 @@ export default function MemoriesGallery() {
         </div>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-          {memories.map((memory) => (
+          {memories.map((memory, index) => (
             <div
               key={memory.id}
-              className="group relative aspect-square bg-gray-100 rounded-xl overflow-hidden cursor-pointer hover:shadow-lg transition-all duration-200"
+              className="group relative aspect-square bg-gray-100 rounded-xl overflow-hidden cursor-pointer hover:shadow-lg transition-all duration-200 animate-fade-in"
+              style={{
+                animationDelay: `${index * 50}ms`
+              }}
               onClick={() => setSelectedMemory(memory)}
             >
               <img

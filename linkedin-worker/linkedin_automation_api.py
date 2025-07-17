@@ -254,10 +254,17 @@ class LinkedInAutomationAPI:
         self, 
         profile_url: Optional[str] = None, 
         name: Optional[str] = None, 
-        message: Optional[str] = None
+        message: Optional[str] = None,
+        timeout_seconds: int = 30
     ) -> Tuple[bool, str, Optional[str]]:
         """
         Add a LinkedIn connection and return success status with message.
+        
+        Args:
+            profile_url: Direct LinkedIn profile URL
+            name: Name to search for
+            message: Optional message to send
+            timeout_seconds: Maximum time to spend on this operation
         
         Returns:
             Tuple of (success: bool, message: str, profile_url: str or None)
@@ -266,12 +273,24 @@ class LinkedInAutomationAPI:
             return False, "Not logged into LinkedIn", None
         
         try:
+            # Wrap the operation in a timeout
             if profile_url:
-                return await self._add_by_profile_url(profile_url, message)
+                result = await asyncio.wait_for(
+                    self._add_by_profile_url(profile_url, message),
+                    timeout=timeout_seconds
+                )
             elif name:
-                return await self._add_by_search(name, message)
+                result = await asyncio.wait_for(
+                    self._add_by_search(name, message),
+                    timeout=timeout_seconds
+                )
             else:
                 return False, "Either profile_url or name must be provided", None
+            
+            return result
+            
+        except asyncio.TimeoutError:
+            return False, f"Operation timed out after {timeout_seconds} seconds", None
         except Exception as e:
             return False, f"Error: {str(e)}", None
     

@@ -440,7 +440,7 @@ async def trigger_linkedin_connection(contact: ContactData, contact_id: str) -> 
                     "name": full_name if not linkedin_url and full_name else None,
                     "message": f"Hi {contact.first_name or 'there'}! Great meeting you. I'd like to connect on LinkedIn."
                 },
-                timeout=30.0
+                timeout=35.0  # Allow slightly more time than the LinkedIn worker's internal timeout
             )
 
             if response.status_code == 200:
@@ -452,8 +452,98 @@ async def trigger_linkedin_connection(contact: ContactData, contact_id: str) -> 
         except httpx.ConnectError:
             logger.warning("LinkedIn worker API not available")
             return {"success": False, "message": "LinkedIn worker not available"}
+        except httpx.TimeoutException:
+            logger.warning("LinkedIn worker API timed out")
+            return {"success": False, "message": "LinkedIn operation timed out"}
         except Exception as e:
             logger.error(f"Error connecting to LinkedIn API: {str(e)}")
+            return {"success": False, "message": str(e)}
+
+
+async def trigger_twitter_follow(contact: ContactData, contact_id: str) -> dict:
+    """Trigger Twitter follow via the Twitter worker API."""
+    twitter_api_url = os.getenv("TWITTER_API_URL", "http://localhost:8003")
+
+    # Look for Twitter URL in the urls list
+    twitter_username = None
+    for url in contact.urls:
+        if "twitter.com" in url.lower() or "x.com" in url.lower():
+            # Extract username from URL
+            if "/" in url:
+                twitter_username = url.split("/")[-1]
+            break
+
+    # If no Twitter URL found, create a potential username from name
+    if not twitter_username:
+        name_parts = [contact.first_name, contact.last_name]
+        full_name = " ".join(part for part in name_parts if part)
+        if full_name:
+            # Create a potential username (this is speculative)
+            twitter_username = full_name.lower().replace(" ", "")
+
+    if not twitter_username:
+        return {"success": False, "message": "No Twitter username found"}
+
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(
+                f"{twitter_api_url}/api/follow",
+                json={
+                    "username": twitter_username
+                },
+                timeout=30.0
+            )
+
+            if response.status_code == 200:
+                return response.json()
+            else:
+                logger.error(f"Twitter API error: {response.status_code} - {response.text}")
+                return {"success": False, "message": f"Twitter API error: {response.status_code}"}
+
+        except httpx.ConnectError:
+            logger.warning("Twitter worker API not available")
+            return {"success": False, "message": "Twitter worker not available"}
+        except Exception as e:
+            logger.error(f"Error connecting to Twitter API: {str(e)}")
+            return {"success": False, "message": str(e)}
+
+
+async def trigger_email_send(contact: ContactData, contact_id: str, photo_path: Optional[str] = None) -> dict:
+    """Trigger email send via the Email worker API."""
+    email_api_url = os.getenv("EMAIL_API_URL", "http://localhost:8002")
+
+    if not contact.emails:
+        return {"success": False, "message": "No email address found"}
+
+    # Prepare the request
+    email_data = {
+        "first_name": contact.first_name,
+        "last_name": contact.last_name,
+        "email": contact.emails[0],
+        "company": "",  # Could be extracted from LinkedIn URL or other sources
+        "title": "",    # Could be extracted from LinkedIn URL or other sources
+        "photo_path": photo_path if photo_path else None
+    }
+
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(
+                f"{email_api_url}/api/send-networking-email",
+                json=email_data,
+                timeout=30.0
+            )
+
+            if response.status_code == 200:
+                return response.json()
+            else:
+                logger.error(f"Email API error: {response.status_code} - {response.text}")
+                return {"success": False, "message": f"Email API error: {response.status_code}"}
+
+        except httpx.ConnectError:
+            logger.warning("Email worker API not available")
+            return {"success": False, "message": "Email worker not available"}
+        except Exception as e:
+            logger.error(f"Error connecting to Email API: {str(e)}")
             return {"success": False, "message": str(e)}
 
 
@@ -591,11 +681,39 @@ async def receive_contact(contact: ContactData, background_tasks: BackgroundTask
             else:
                 linkedin_status = f"LinkedIn failed: {linkedin_result.get('message', 'Unknown error')}"
 
+        # Try Twitter follow if we have name or Twitter URL
+        twitter_status = "No Twitter action taken"
+        should_try_twitter = False
+        
+        if contact.urls and any("twitter.com" in url.lower() or "x.com" in url.lower() for url in contact.urls):
+            should_try_twitter = True
+        elif full_name:  # If we have a name, we can try searching
+            should_try_twitter = True
+        
+        if should_try_twitter:
+            # Trigger Twitter follow
+            twitter_result = await trigger_twitter_follow(contact, contact_id)
+            if twitter_result.get("success"):
+                twitter_status = "Twitter follow request sent"
+            else:
+                twitter_status = f"Twitter failed: {twitter_result.get('message', 'Unknown error')}"
+
+        # Try Email send if we have email
+        email_status = "No Email action taken"
+        
+        if contact.emails:
+            # Trigger Email send
+            email_result = await trigger_email_send(contact, contact_id, photo_path)
+            if email_result.get("success"):
+                email_status = "Email sent successfully"
+            else:
+                email_status = f"Email failed: {email_result.get('message', 'Unknown error')}"
+
         return ContactResponse(
             success=True,
             message=f"Contact saved successfully",
             contact_id=contact_id,
-            linkedin_status=f"{whatsapp_status} | {linkedin_status}"
+            linkedin_status=f"{whatsapp_status} | {linkedin_status} | {twitter_status} | {email_status}"
         )
 
     except Exception as e:
